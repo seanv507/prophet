@@ -7,11 +7,12 @@ functions {
 
     // Start with an empty matrix.
     A = rep_matrix(0, N, S);
-    a_row = rep_row_vector(0, S); 
 
     // Fill in each row of A.
     for (i in 1:N) {
-      cp_idx = 1;  
+      cp_idx = 1;
+      // Start with an empty row.
+      a_row = rep_row_vector(0, S); 
       while ((cp_idx <= S) && (t[i] >= t_change[cp_idx])) {
         a_row[cp_idx] = 1;
         cp_idx = cp_idx + 1;
@@ -75,19 +76,20 @@ data {
   int N;                // Number of data points 
   int T;                // Number of time periods
   int<lower=1> K;       // Number of regressors
+  int<lower=1> C;                // categories
   vector[N] t;          // Time
   vector[N] cap;        // Capacities for logistic trend
   vector[N] y;       // Time series
-  int S;                // Number of changepoints
-  vector[S] t_change;   // Times of trend changepoints
-  int C;                // categories
+  
   vector[N] category;
   matrix[N,K] X;        // Regressors
   vector[K] sigmas;     // ?Scale on seasonality prior
-  real<lower=0> tau;    // Scale on changepoints prior
   int trend_indicator;  // 0 for linear, 1 for logistic
   vector[K] s_a;        // Indicator of additive features
   vector[K] s_m;        // Indicator of multiplicative features
+  int S;                // Number of changepoints
+  real<lower=0> tau;    // Scale on changepoints prior
+  vector[S] t_change;   // Times of trend changepoints
 }
 
 transformed data {
@@ -130,11 +132,11 @@ model {
   m_mu ~ normal(0, 5);
   m ~ normal(m_mu, 5);
   delta_mu ~ double_exponential(0, tau);
-  delta ~ double_exponential(0, tau);
+  delta ~ double_exponential(delta_mu, tau);
   sigma_obs ~ normal(0, 0.5);
   beta ~ normal(0, sigmas);
 
   // Likelihood
   y ~ normal(y_hat, sigma_obs);
-  
+  // aim to vectorise sampling gradient
 }

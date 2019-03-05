@@ -4,7 +4,7 @@
 ## This source code is licensed under the BSD-style license found in the
 ## LICENSE file in the root directory of this source tree. An additional grant
 ## of patent rights can be found in the PATENTS file in the same directory.
-
+#TODO change k_mu, m_mu, delta_mu back to k and m?
 ## Makes R CMD CHECK happy due to dplyr syntax below
 globalVariables(c(
   "ds", "y", "cap", ".",
@@ -363,7 +363,10 @@ setup_dataframe <- function(m, df, initialize_scales = FALSE) {
       stop('Found NaN in column ', name)
     }
   }
-
+  df[['category']] = unclass(factor(df[['category']]))
+  if (anyNA(df[['category']])) {
+    stop('Found NaN in category column')
+  }
   df <- df %>%
     dplyr::arrange(ds)
 
@@ -1151,7 +1154,8 @@ fit.prophet <- function(m, df, ...) {
   if (nrow(history) < 2) {
     stop("Dataframe has less than 2 non-NA rows.")
   }
-  m$history.dates <- sort(set_date(df$ds))
+  #todo what constraints do we need on dates between series?
+  m$history.dates <- sort(unique(set_date(df$ds)))
 
   out <- setup_dataframe(m, history, initialize_scales = TRUE)
   history <- out$df
@@ -1170,27 +1174,32 @@ fit.prophet <- function(m, df, ...) {
 
   # Construct input to stan
   dat <- list(
-    T = nrow(history),
+    N = nrow(history),
+    T =length(unique(history$t)),
     K = ncol(seasonal.features),
-    S = length(m$changepoints.t),
+    C = length(unique(history$category)),
+    t = history$t,    
     y = history$y_scaled,
-    t = history$t,
-    t_change = array(m$changepoints.t),
+    category = history$category,
     X = as.matrix(seasonal.features),
     sigmas = array(prior.scales),
-    tau = m$changepoint.prior.scale,
     trend_indicator = as.numeric(m$growth == 'logistic'),
     s_a = array(component.cols$additive_terms),
-    s_m = array(component.cols$multiplicative_terms)
+    s_m = array(component.cols$multiplicative_terms),
+    S = length(m$changepoints.t),
+    tau = m$changepoint.prior.scale,
+    t_change = array(m$changepoints.t)
   )
 
   # Run stan
   if (m$growth == 'linear') {
     dat$cap <- rep(0, nrow(history))  # Unused inside Stan
-    kinit <- linear_growth_init(history)
+    kinit <- data.frame(do.call(rbind,
+      by(history, history$category, linear_growth_init)))
   } else {
     dat$cap <- history$cap_scaled  # Add capacities to the Stan data
-    kinit <- logistic_growth_init(history)
+    kinit <- data.frame(do.call(rbind,
+      by(history, history$category, logistic_growth_init)))
   }
 
   if (exists(".prophet.stan.model")) {
@@ -1202,7 +1211,7 @@ fit.prophet <- function(m, df, ...) {
   stan_init <- function() {
     list(k = kinit[1],
          m = kinit[2],
-         delta = array(rep(0, length(m$changepoints.t))),
+         delta = matrix(0, dat$C, length(m$changepoints.t)),
          beta = array(rep(0, ncol(seasonal.features))),
          sigma_obs = 1
     )
@@ -1239,18 +1248,18 @@ fit.prophet <- function(m, df, ...) {
   }
   
   # Cast the parameters to have consistent form, whether full bayes or MAP
-  for (name in c('delta', 'beta')){
+  for (name in c('k', 'm', 'delta_mu', 'beta')){
     m$params[[name]] <- matrix(m$params[[name]], nrow = n.iteration)
   }
   # rstan::sampling returns 1d arrays; converts to atomic vectors.
-  for (name in c('k', 'm', 'sigma_obs')){
+  for (name in c('k_mu', 'm_mu', 'sigma_obs')){
     m$params[[name]] <- c(m$params[[name]])
   }
   # If no changepoints were requested, replace delta with 0s
   if (m$n.changepoints == 0) {
     # Fold delta into the base rate k
-    m$params$k <- m$params$k + m$params$delta[, 1]
-    m$params$delta <- matrix(rep(0, length(m$params$delta)), nrow = n.iteration)
+    m$params$k_mu <- m$params$k_mu + m$params$delta_mu[, 1]
+    m$params$delta_mu <- matrix(rep(0, length(m$params$delta_mu)), nrow = n.iteration)
   }
   return(m)
 }

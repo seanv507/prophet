@@ -1,17 +1,18 @@
 functions {
-  matrix get_changepoint_matrix(vector t, vector t_change, int T, int S) {
-    // Assumes t and t_change are sorted.
-    matrix[T, S] A;
+  matrix get_changepoint_matrix(vector t, vector t_change, int N, int S) {
+    // Assumes t_change are sorted.
+    matrix[N, S] A;
     row_vector[S] a_row;
     int cp_idx;
 
     // Start with an empty matrix.
-    A = rep_matrix(0, T, S);
-    a_row = rep_row_vector(0, S);
-    cp_idx = 1;
+    A = rep_matrix(0, N, S);
 
     // Fill in each row of A.
-    for (i in 1:T) {
+    for (i in 1:N) {
+      cp_idx = 1;
+      // Start with an empty row.
+      a_row = rep_row_vector(0, S); 
       while ((cp_idx <= S) && (t[i] >= t_change[cp_idx])) {
         a_row[cp_idx] = 1;
         cp_idx = cp_idx + 1;
@@ -40,20 +41,20 @@ functions {
     return gamma;
   }
 
-  vector logistic_trend(
+  real logistic_trend(
     real k,
     real m,
-    vector delta,
-    vector t,
-    vector cap,
-    matrix A,
+    vector delta, // ???
+    real t,
+    real cap,
+    vector A, //row
     vector t_change,
     int S
   ) {
     vector[S] gamma;
 
     gamma = logistic_gamma(k, m, delta, t_change, S);
-    return cap .* inv_logit((k + A * delta) .* (t - (m + A * gamma)));
+    return cap * inv_logit((k + A * delta) .* (t - (m + A * gamma)));
   }
 
   // Linear trend function
@@ -66,61 +67,76 @@ functions {
     matrix A,
     vector t_change
   ) {
+      // why diff?
     return (k + A * delta) .* t + (m + A * (-t_change .* delta));
   }
 }
 
 data {
+  int N;                // Number of data points 
   int T;                // Number of time periods
   int<lower=1> K;       // Number of regressors
-  vector[T] t;          // Time
-  vector[T] cap;        // Capacities for logistic trend
-  vector[T] y;          // Time series
-  int S;                // Number of changepoints
-  vector[S] t_change;   // Times of trend changepoints
-  matrix[T,K] X;        // Regressors
-  vector[K] sigmas;     // Scale on seasonality prior
-  real<lower=0> tau;    // Scale on changepoints prior
+  int<lower=1> C;                // categories
+  vector[N] t;          // Time
+  vector[N] cap;        // Capacities for logistic trend
+  vector[N] y;       // Time series
+  
+  vector[N] category;
+  matrix[N,K] X;        // Regressors
+  vector[K] sigmas;     // ?Scale on seasonality prior
   int trend_indicator;  // 0 for linear, 1 for logistic
   vector[K] s_a;        // Indicator of additive features
   vector[K] s_m;        // Indicator of multiplicative features
+  int S;                // Number of changepoints
+  real<lower=0> tau;    // Scale on changepoints prior
+  vector[S] t_change;   // Times of trend changepoints
 }
 
 transformed data {
-  matrix[T, S] A;
-  A = get_changepoint_matrix(t, t_change, T, S);
+  matrix[N, S] A;
+  A = get_changepoint_matrix(t, t_change, N, S);
+
 }
 
 parameters {
-  real k;                   // Base trend growth rate
-  real m;                   // Trend offset
-  vector[S] delta;          // Trend rate adjustments
+  real k_mu;                   // Base trend growth rate
+  real m_mu;                   // Trend offset
+  vector[S] delta_mu;          // Trend rate adjustments
+  vector[C] k;
+  vector[C] m;
+  vector[C] delta[S];          // Trend rate adjustments
   real<lower=0> sigma_obs;  // Observation noise
   vector[K] beta;           // Regressor coefficients
 }
 
+transformed parameters {
+  
+  vector[N] y_hat;
+  for (i in 1:N)
+    if (trend_indicator == 0) {
+        y_hat[i] = logistic_trend(k[category[i], m[category[i]], delta_hat[category[i]],
+                                  t, cap, A[i], t_change, S)
+    }else{
+        y_hat[i] = linear_trend(k[category[i], m[category[i]], delta_hat[category[i]],
+                                  t, A[i], t_change)
+    }
+    y_hat[i] *= (1 + X[i] * (beta .* s_m))
+    y_hat[i] += X[i] * (beta .* s_a)
+    // indexing matrix considered inefficient
+}
+
 model {
   //priors
-  k ~ normal(0, 5);
-  m ~ normal(0, 5);
-  delta ~ double_exponential(0, tau);
+  k_mu ~ normal(0, 5);
+  k ~ normal(k_mu, 5);
+  m_mu ~ normal(0, 5);
+  m ~ normal(m_mu, 5);
+  delta_mu ~ double_exponential(0, tau);
+  delta ~ double_exponential(delta_mu, tau);
   sigma_obs ~ normal(0, 0.5);
   beta ~ normal(0, sigmas);
 
   // Likelihood
-  if (trend_indicator == 0) {
-    y ~ normal(
-      linear_trend(k, m, delta, t, A, t_change)
-      .* (1 + X * (beta .* s_m))
-      + X * (beta .* s_a),
-      sigma_obs
-    );
-  } else if (trend_indicator == 1) {
-    y ~ normal(
-      logistic_trend(k, m, delta, t, cap, A, t_change, S)
-      .* (1 + X * (beta .* s_m))
-      + X * (beta .* s_a),
-      sigma_obs
-    );
-  }
+  y ~ normal(y_hat, sigma_obs);
+  // aim to vectorise sampling gradient
 }

@@ -97,12 +97,12 @@ transformed data {
 }
 
 parameters {
-  real k_mu;                  // Base trend growth rate
-  real m_mu;                  // Trend offset
-  vector[S] delta_mu;         // Trend rate adjustments
-  real k[C];
-  real m[C];
-  vector[S] delta[C];   // Trend rate adjustments
+  real k;                  // Base trend growth rate
+  real m;                  // Trend offset
+  vector[S] delta;         // Trend rate adjustments
+  real k_category[C];
+  real m_category[C];
+  vector[S] delta_category[C];   // Trend rate adjustments
   real<lower=0> sigma_obs;  // Observation noise
   vector[K] beta;           // Regressor coefficients
 }
@@ -111,13 +111,16 @@ transformed parameters {
   
   vector[N] y_hat;
   for (i in 1:N){
-    print("k, m, delta, t_change", k, m, delta, t_change)
     if (trend_indicator == 0) {
-        y_hat[i] = logistic_trend(k[category[i]], m[category[i]], delta[category[i]],
+        y_hat[i] = logistic_trend(k_category[category[i]], 
+                                  m_category[category[i]],
+                                  delta_category[category[i]],
                                   t[i], cap[i], A[i], t_change, S);
     }else{
-        y_hat[i] = linear_trend(k[category[i]], m[category[i]], delta[category[i]],
-                                  t[i], A[i], t_change);
+        y_hat[i] = linear_trend(k_category[category[i]],
+                                m_category[category[i]],
+                                delta_category[category[i]],
+                                t[i], A[i], t_change);
     }
     y_hat[i] *= (1 + X[i] * (beta .* s_m));
     y_hat[i] += X[i] * (beta .* s_a);
@@ -127,13 +130,13 @@ transformed parameters {
 
 model {
   //priors
-  k_mu ~ normal(0, 5);
-  k ~ normal(k_mu, 5);
-  m_mu ~ normal(0, 5);
-  m ~ normal(m_mu, 5);
-  delta_mu ~ double_exponential(0, tau);
+  k ~ normal(0, 5);
+  k_category ~ normal(k, 5);
+  m ~ normal(0, 5);
+  m_category ~ normal(m, 5);
+  delta ~ double_exponential(0, tau);
   for (c in 1:C)
-    delta[c] ~ double_exponential(delta_mu, tau);
+    delta_category[c] ~ double_exponential(delta, tau);
   sigma_obs ~ normal(0, 0.5);
   beta ~ normal(0, sigmas);
 

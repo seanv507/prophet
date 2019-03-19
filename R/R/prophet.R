@@ -388,7 +388,7 @@ setup_dataframe <- function(m, df, initialize_scales = FALSE) {
       dplyr::mutate(cap_scaled = (cap - floor) / m$y.scale[m$category])
   }
 
-  df$t <- time_diff(df$ds, m$start, "secs") / m$t.scale
+  df$t <- time_diff(df$ds, m$start[df$category], "secs") / m$t.scale
   if (exists('y', where = df)) {
     df$y_scaled <- (df$y - df$floor) / m$y.scale[m$category]
   }
@@ -426,11 +426,16 @@ initialize_scales_fn <- function(m, initialize_scales, df) {
     if (sc == 0) {
       sc <- 1
     }
+    sc
   })
   m$start <- by(df, df$category, function(df) min(df$ds))
+  attributes(m$start) <- attributes(df$ds[[1]]) 
+  # date format lost because could have diff timezone for each elem of list
+  # but came from data frame
   m$t.scale <- by(df, df$category, function(df) {
-    time_diff(max(df$ds), m$start, "secs")
+    time_diff(max(df$ds), m$start[df$category], "secs")
   })
+
   for (name in names(m$extra_regressors)) {
     standardize <- m$extra_regressors[[name]]$standardize
     n.vals <- length(unique(df[[name]]))
@@ -497,7 +502,7 @@ initialize_scales_fn <- function(m, initialize_scales, df) {
     }
     if (length(m$changepoints) > 0) {
       m$changepoints.t <- sort(
-      time_diff(m$changepoints, m$start, "secs")) / m$t.scale
+      time_diff(m$changepoints, m$start[[1]], "secs")) / m$t.scale[[1]]
     } else {
       m$changepoints.t <- c(0) # dummy changepoint
     }
@@ -1250,7 +1255,7 @@ initialize_scales_fn <- function(m, initialize_scales, df) {
       m$params <- stan.fit$par
       n.iteration <- 1
     }
-
+    print(names(m$params))
     # Cast the parameters to have consistent form, whether full bayes or MAP
     for (name in c('k_category', 'm_category', 'delta', 'beta')) {
       m$params[[name]] <- matrix(m$params[[name]], nrow = n.iteration)

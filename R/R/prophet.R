@@ -388,9 +388,9 @@ setup_dataframe <- function(m, df, initialize_scales = FALSE) {
       dplyr::mutate(cap_scaled = (cap - floor) / m$y.scale[m$category])
   }
 
-  df$t <- time_diff(df$ds, m$start[df$category], "secs") / m$t.scale
+  df$t <- time_diff(df$ds, m$start, "secs") / m$t.scale
   if (exists('y', where = df)) {
-    df$y_scaled <- (df$y - df$floor) / m$y.scale[m$category]
+    df$y_scaled <- (df$y - df$floor) / m$y.scale[df$category]
   }
 
   for (name in names(m$extra_regressors)) {
@@ -428,14 +428,9 @@ initialize_scales_fn <- function(m, initialize_scales, df) {
     }
     sc
   })
-  m$start <- by(df, df$category, function(df) min(df$ds))
-  attributes(m$start) <- attributes(df$ds[[1]]) 
-  # date format lost because could have diff timezone for each elem of list
-  # but came from data frame
-  m$t.scale <- by(df, df$category, function(df) {
-    time_diff(max(df$ds), m$start[df$category], "secs")
-  })
-
+  m$start <- min(df$ds)
+  m$t.scale <- time_diff(max(df$ds), m$start, "secs")
+  
   for (name in names(m$extra_regressors)) {
     standardize <- m$extra_regressors[[name]]$standardize
     n.vals <- length(unique(df[[name]]))
@@ -486,7 +481,7 @@ initialize_scales_fn <- function(m, initialize_scales, df) {
     } else {
       # Place potential changepoints evenly through the first changepoint.range
       # proportion of the history.
-      hist.size <- floor(nrow(m$history.dates) * m$changepoint.range)
+      hist.size <- floor(length(m$history.dates) * m$changepoint.range)
       if (m$n.changepoints + 1 > hist.size) {
         m$n.changepoints <- hist.size - 1
         message('n.changepoints greater than number of observations. Using ',
@@ -502,7 +497,7 @@ initialize_scales_fn <- function(m, initialize_scales, df) {
     }
     if (length(m$changepoints) > 0) {
       m$changepoints.t <- sort(
-      time_diff(m$changepoints, m$start[[1]], "secs")) / m$t.scale[[1]]
+      time_diff(m$changepoints, m$start, "secs")) / m$t.scale
     } else {
       m$changepoints.t <- c(0) # dummy changepoint
     }
@@ -1260,6 +1255,13 @@ initialize_scales_fn <- function(m, initialize_scales, df) {
     for (name in c('k_category', 'm_category', 'delta', 'beta')) {
       m$params[[name]] <- matrix(m$params[[name]], nrow = n.iteration)
     }
+    name <- 'delta_category'
+    dim_dc <- dim(m$params[[name]])
+    if (length(dim_dc) == 2){
+      # add dummy iterations
+      m$params[[name]] <- array(m$params[[name]], c(c(1), dim_dc))
+    }
+    
     # rstan::sampling returns 1d arrays; converts to atomic vectors.
     for (name in c('k', 'm', 'sigma_obs')) {
       m$params[[name]] <- c(m$params[[name]])
@@ -1334,16 +1336,15 @@ initialize_scales_fn <- function(m, initialize_scales, df) {
   #' @return Vector y(t).
   #'
   #' @keywords internal
-  piecewise_linear <- function(t, deltas, k, m, changepoint.ts) {
+  piecewise_linear <- function(t, deltas, k_t, m_t, changepoint.ts) {
     # Intercept changes
     gammas <- -changepoint.ts * deltas
     # Get cumulative slope and intercept at each t
-    k_t <- rep(k, length(t))
-    m_t <- rep(m, length(t))
+    
     for (s in 1:length(changepoint.ts)) {
       indx <- t >= changepoint.ts[s]
-      k_t[indx] <- k_t[indx] + deltas[s]
-      m_t[indx] <- m_t[indx] + gammas[s]
+      k_t[indx] <- k_t[indx] + deltas[indx, s]
+      m_t[indx] <- m_t[indx] + gammas[indx, s]
     }
     y <- k_t * t + m_t
     return(y)
@@ -1390,19 +1391,25 @@ initialize_scales_fn <- function(m, initialize_scales, df) {
   #'
   #' @keywords internal
   predict_trend <- function(model, df) {
-    k_category <- mean(model$params$k_category, na.rm = TRUE)
-    param.m_category <- mean(model$params$m_category, na.rm = TRUE)
-    deltas <- colMeans(model$params$delta, na.rm = TRUE)
-
+    k_category <- colMeans(model$params$k_category, na.rm = TRUE)
+    param.m_category <- colMeans(model$params$m_category, na.rm = TRUE)
+    deltas_category <- apply(model$params$delta_category, c(2, 3), mean)
+    
     t <- df$t
     if (model$growth == 'linear') {
-      trend <- piecewise_linear(t, deltas, k, param.m, model$changepoints.t)
+      trend <- piecewise_linear(t,
+                                deltas_category[df$category, ], 
+                                k_category[df$category],
+                                param.m_category[df$category], model$changepoints.t)
     } else {
       cap <- df$cap_scaled
       trend <- piecewise_logistic(
-      t, cap, deltas, k, param.m, model$changepoints.t)
+      t, cap,
+      deltas_category[df$category, ], 
+      k_category[df$category],
+      param.m_category[df$category], model$changepoints.t)
     }
-    return(trend * model$y.scale + df$floor)
+    return(trend * model$y.scale[df$category] + df$floor)
   }
 
   #' Predict seasonality components, holidays, and added regressors.
@@ -1428,7 +1435,7 @@ initialize_scales_fn <- function(m, initialize_scales, df) {
 
       comp <- X %*% beta.c
       if (component %in% m$component.modes$additive) {
-        comp <- comp * m$y.scale
+        comp <- comp * m$y.scale[df$category]
       }
       component.predictions[[component]] <- rowMeans(comp, na.rm = TRUE)
       component.predictions[[paste0(component, '_lower')]] <- apply(
@@ -1540,11 +1547,11 @@ initialize_scales_fn <- function(m, initialize_scales, df) {
     trend <- sample_predictive_trend(m, df, iteration)
 
     beta <- m$params$beta[iteration,]
-    Xb_a = as.matrix(seasonal.features) %*% (beta * s_a) * m$y.scale
+    Xb_a = as.matrix(seasonal.features) %*% (beta * s_a) * m$y.scale[df$category]
     Xb_m = as.matrix(seasonal.features) %*% (beta * s_m)
 
     sigma <- m$params$sigma_obs[iteration]
-    noise <- stats::rnorm(nrow(df), mean = 0, sd = sigma) * m$y.scale
+    noise <- stats::rnorm(nrow(df), mean = 0, sd = sigma) * m$y.scale[df$category]
 
     return(list("yhat" = trend * (1 + Xb_m) + Xb_a + noise,
               "trend" = trend))
@@ -1597,7 +1604,7 @@ initialize_scales_fn <- function(m, initialize_scales, df) {
       cap <- df$cap_scaled
       trend <- piecewise_logistic(t, cap, deltas, k, param.m, changepoint.ts)
     }
-    return(trend * model$y.scale + df$floor)
+    return(trend * model$y.scale[df$category] + df$floor)
   }
 
   #' Make dataframe with future dates for forecasting.
